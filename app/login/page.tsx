@@ -26,8 +26,13 @@ function Login() {
       setBusy(false);
       return;
     }
-    // only follow same-site redirects
-    window.location.href = redirect?.startsWith("/") && !redirect.startsWith("//") ? redirect : "/";
+    // only follow same-origin redirects (resolve the URL, don't trust string prefixes like "/\evil.com")
+    let target = "/";
+    try {
+      const u = new URL(redirect ?? "/", window.location.origin);
+      if (u.origin === window.location.origin) target = u.pathname + u.search + u.hash;
+    } catch {}
+    window.location.href = target;
   }
 
   return (
