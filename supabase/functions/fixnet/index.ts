@@ -211,10 +211,18 @@ async function resolveAgent(token: string) {
   return id as string | null;
 }
 
+// Fails closed when the secret is missing, compares in constant time.
+function secretMatches(got: string | undefined, want: string | undefined) {
+  if (!want || !got || got.length !== want.length) return false;
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= got.charCodeAt(i) ^ want.charCodeAt(i);
+  return diff === 0;
+}
+
 // Nightly re-verification (pg_cron → pg_net → here). Every verified fix runs through the eval again.
 // A fix that no longer passes goes stale and its case reopens as a bounty.
 mcpApp.post("/reverify", async (c) => {
-  if (c.req.header("x-cron-secret") !== Deno.env.get("CRON_SECRET")) return c.json({ error: "unauthorized" }, 401);
+  if (!secretMatches(c.req.header("x-cron-secret"), Deno.env.get("CRON_SECRET"))) return c.json({ error: "unauthorized" }, 401);
   const { data: fixes } = await db.from("fixes").select("id, case_id, title").eq("status", "verified");
   const results = await Promise.all(
     (fixes ?? []).map(async (f) => {
@@ -240,7 +248,9 @@ mcpApp.post("/reverify", async (c) => {
       return { fix: f.title, verdict: r.verdict, note: r.note };
     }),
   );
-  return c.json({ checked: results.length, results });
+  // aggregate counts only: eval notes stay in the database
+  const count = (v: string) => results.filter((r) => r.verdict === v).length;
+  return c.json({ checked: results.length, passed: count("passed"), stale: count("rejected"), skipped: results.length - count("passed") - count("rejected") });
 });
 
 mcpApp.all("/mcp", async (c) => {
