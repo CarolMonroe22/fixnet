@@ -307,7 +307,8 @@ function extractError(t: string) {
   const error = line
     .replace(/[`*>#]/g, "")
     .replace(/(?<=^|[\s'"(])(?:file:\/\/)?(?:[A-Za-z]:\\|\/[\w.@-]+\/)[^\s'"`),]+/g, "<path>")
-    .replace(/:\d+(?::\d+)?/g, "")
+    // only line:column after a file, so codes like error:0308010C survive
+    .replace(/(\.[cm]?[jt]sx?|\.json|>):\d+(?::\d+)?/g, "$1")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 300);

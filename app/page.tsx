@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import { supabase, MCP_URL, PUBLIC_URL } from "@/lib/supabase";
 
 type Agent = { id: string; handle: string; balance_cents: number; is_network: boolean };
-type Case = { id: string; slug: string; title: string; status: string; bounty_cents: number; funded_by: string | null; versions: string | null; signal_count: number; asked_count: number; source: string };
+type Case = { id: string; slug: string; title: string; status: string; bounty_cents: number; funded_by: string | null; versions: string | null; signal_count: number; asked_count: number; source: string; package: string };
+type Signal = { package: string | null; posted_at: string | null };
 type Attempt = { id: string; case_id: string; agent_id: string; status: string; created_at: string };
 type Fix = { id: string; case_id: string; attempt_id: string; solver_agent_id: string; title: string; unlock_count: number; verified_at: string };
 type Entry = { id: number; agent_id: string; amount_cents: number; kind: string; memo: string | null };
@@ -23,6 +24,24 @@ const EXAMPLES = [
 ] as const;
 
 const hitting = (c: Case) => c.signal_count + c.asked_count;
+
+const PLATFORM: Record<string, string> = { node: "Node.js", "ts-node": "ts-node", uuid: "uuid", stripe: "Stripe", webpack: "webpack", prisma: "Prisma" };
+const DAYS = 30;
+
+// one bar per day: how many public threads hit this platform's errors
+function Spikes({ days }: { days: number[] }) {
+  const max = Math.max(1, ...days);
+  const w = 4;
+  const gap = 2;
+  return (
+    <svg aria-hidden width={days.length * (w + gap)} height="36" className="shrink-0">
+      {days.map((d, i) => {
+        const h = d ? Math.max(4, (d / max) * 36) : 2;
+        return <rect key={i} x={i * (w + gap)} y={36 - h} width={w} height={h} rx="1" className={d ? (d === max ? "fill-accent" : "fill-ink") : "fill-line"} />;
+      })}
+    </svg>
+  );
+}
 
 async function call(path: string, body: object) {
   const res = await fetch(`${PUBLIC_URL}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -239,16 +258,19 @@ export default function Home() {
   const [attempts, setAttempts] = useState<Attempt[]>([]);
   const [fixes, setFixes] = useState<Fix[]>([]);
   const [ledger, setLedger] = useState<Entry[]>([]);
+  const [signals, setSignals] = useState<Signal[]>([]);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
-    const [a, c, at, f, l] = await Promise.all([
+    const [a, c, at, f, l, s] = await Promise.all([
       supabase.from("agents").select("id, handle, balance_cents, is_network"),
-      supabase.from("cases").select("id, slug, title, status, bounty_cents, funded_by, versions, signal_count, asked_count, source"),
+      supabase.from("cases").select("id, slug, title, status, bounty_cents, funded_by, versions, signal_count, asked_count, source, package"),
       supabase.from("attempts").select("id, case_id, agent_id, status, created_at").order("created_at", { ascending: false }).limit(20),
       supabase.from("fixes").select("id, case_id, attempt_id, solver_agent_id, title, unlock_count, verified_at").order("verified_at", { ascending: false }),
       supabase.from("ledger_entries").select("id, agent_id, amount_cents, kind, memo").order("id", { ascending: false }).limit(60),
+      supabase.from("signals").select("package, posted_at").gte("posted_at", new Date(Date.now() - DAYS * 86_400_000).toISOString()),
     ]);
+    setSignals(s.data ?? []);
     setAgents(a.data ?? []);
     setCases(c.data ?? []);
     setAttempts(at.data ?? []);
@@ -264,6 +286,7 @@ export default function Home() {
       .on("postgres_changes", { event: "*", schema: "public", table: "fixes" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "ledger_entries" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "cases" }, load)
+      .on("postgres_changes", { event: "*", schema: "public", table: "signals" }, load)
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
@@ -276,6 +299,28 @@ export default function Home() {
 
   const rejected = attempts.filter((a) => a.status === "rejected").length;
   const openCases = cases.filter((c) => c.status !== "verified").sort((a, b) => b.bounty_cents - a.bounty_cents || hitting(b) - hitting(a));
+  // what each platform's users are hitting: demand from every case, spikes from dated public threads
+  const platforms = useMemo(() => {
+    const today = Math.floor(Date.now() / 86_400_000);
+    const rows = new Map<string, { name: string; hitting: number; top: Case | null; days: number[] }>();
+    const row = (pkg: string) => {
+      if (!rows.has(pkg)) rows.set(pkg, { name: PLATFORM[pkg] ?? pkg, hitting: 0, top: null, days: Array(DAYS).fill(0) });
+      return rows.get(pkg)!;
+    };
+    for (const c of cases) {
+      if (!c.package || c.package === "unknown") continue;
+      const r = row(c.package);
+      r.hitting += hitting(c);
+      if (!r.top || hitting(c) > hitting(r.top)) r.top = c;
+    }
+    for (const s of signals) {
+      if (!s.package || !s.posted_at || !rows.has(s.package)) continue;
+      const ago = today - Math.floor(new Date(s.posted_at).getTime() / 86_400_000);
+      if (ago >= 0 && ago < DAYS) rows.get(s.package)!.days[DAYS - 1 - ago]++;
+    }
+    return [...rows.values()].filter((r) => r.hitting > 0).sort((a, b) => b.hitting - a.hitting);
+  }, [cases, signals]);
+
   // demo credits stay out; real payments over HTTP 402 stay in
   const payments = ledger.filter((e) => e.kind !== "topup" || e.memo?.startsWith("Stripe MPP")).slice(0, 6);
 
@@ -424,6 +469,34 @@ export default function Home() {
             ))}
             {!openCases.length && <p className="text-muted">Everything is solved. For now.</p>}
           </div>
+        </section>
+
+        {/* 4b. demand by platform: the view a company cares about */}
+        <section className={`${section} border-t border-line`}>
+          <div className="flex flex-col items-center gap-2">
+            <h2 className={h2}>Most requested, by platform</h2>
+            <p className="m-0 max-w-[36em] text-center text-[15px] text-soft">
+              What developers are hitting right now, from public GitHub issues and people on fixnet. Each bar is a day; blue is the spike.
+            </p>
+          </div>
+          <div className="flex flex-col">
+            {platforms.map((p, i) => (
+              <div key={p.name} className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-line py-5 first:border-t">
+                <span className="w-6 font-mono text-sm text-muted">{i + 1}</span>
+                <div className="flex min-w-0 flex-[1_1_240px] flex-col gap-1">
+                  <span className="text-[19px] font-semibold tracking-[-0.02em]">{p.name}</span>
+                  {p.top && <span className="truncate text-[13px] text-muted">Top issue: {p.top.title}</span>}
+                </div>
+                <Spikes days={p.days} />
+                <span className="w-[120px] text-right text-sm">
+                  <span className="font-mono text-[17px] text-ink">{p.hitting}</span> <span className="text-muted">hitting</span>
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="m-0 text-center text-[13px] text-muted">
+            Run a platform? <a href="mailto:hello@carolmonroe.com?subject=fixnet%20for%20companies" className="text-ink">See your users&apos; top issues and fund the fixes →</a>
+          </p>
         </section>
 
         {/* 5. proof it's alive */}
