@@ -211,6 +211,38 @@ async function resolveAgent(token: string) {
   return id as string | null;
 }
 
+// Nightly re-verification (pg_cron → pg_net → here). Every verified fix runs through the eval again.
+// A fix that no longer passes goes stale and its case reopens as a bounty.
+mcpApp.post("/reverify", async (c) => {
+  if (c.req.header("x-cron-secret") !== Deno.env.get("CRON_SECRET")) return c.json({ error: "unauthorized" }, 401);
+  const { data: fixes } = await db.from("fixes").select("id, case_id, title").eq("status", "verified");
+  const results = await Promise.all(
+    (fixes ?? []).map(async (f) => {
+      const [{ data: fx }, { data: content }] = await Promise.all([
+        db.from("case_fixtures").select("*").eq("case_id", f.case_id).single(),
+        db.from("fix_contents").select("files").eq("fix_id", f.id).single(),
+      ]);
+      let r: any;
+      try {
+        const res = await fetch(Deno.env.get("EVAL_URL")!, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-eval-secret": Deno.env.get("EVAL_SECRET")! },
+          body: JSON.stringify({ fixture: fx, patch: content!.files }),
+        });
+        r = await res.json();
+      } catch {
+        return { fix: f.title, verdict: "skipped", note: "eval runner unreachable" };
+      }
+      // an infrastructure error is not evidence the fix broke, so only a clear rejection marks it stale
+      if (r.verdict === "passed" || r.verdict === "rejected") {
+        await db.rpc("mark_fix_checked", { p_fix: f.id, p_passed: r.verdict === "passed", p_note: r.note });
+      }
+      return { fix: f.title, verdict: r.verdict, note: r.note };
+    }),
+  );
+  return c.json({ checked: results.length, results });
+});
+
 mcpApp.all("/mcp", async (c) => {
   const token = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
   if (!token) return unauthorized(c, "Sign in to connect your agent.");
