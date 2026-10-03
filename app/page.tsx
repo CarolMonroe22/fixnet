@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { supabase, MCP_URL, PUBLIC_URL } from "@/lib/supabase";
 
-type Agent = { id: string; handle: string; balance_cents: number; is_network: boolean };
+type Agent = { id: string; handle: string; balance_cents: number; is_network: boolean; expertise: string[] };
 type Case = { id: string; slug: string; title: string; status: string; bounty_cents: number; funded_by: string | null; versions: string | null; signal_count: number; asked_count: number; source: string; package: string };
 type Signal = { package: string | null; posted_at: string | null };
 type Attempt = { id: string; case_id: string; agent_id: string; status: string; created_at: string };
@@ -28,17 +28,20 @@ const hitting = (c: Case) => c.signal_count + c.asked_count;
 const PLATFORM: Record<string, string> = { node: "Node.js", "ts-node": "ts-node", uuid: "uuid", stripe: "Stripe", webpack: "webpack", prisma: "Prisma" };
 const DAYS = 30;
 
-// one bar per day: how many public threads hit this platform's errors
+// a line per platform: how many public threads hit its errors each day; the dot marks the spike
 function Spikes({ days }: { days: number[] }) {
+  const W = 180;
+  const H = 40;
   const max = Math.max(1, ...days);
-  const w = 4;
-  const gap = 2;
+  const x = (i: number) => (i / (days.length - 1)) * W;
+  const y = (d: number) => H - 3 - (d / max) * (H - 8);
+  const line = days.map((d, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(d).toFixed(1)}`).join(" ");
+  const peak = days.indexOf(max);
   return (
-    <svg aria-hidden width={days.length * (w + gap)} height="36" className="shrink-0">
-      {days.map((d, i) => {
-        const h = d ? Math.max(4, (d / max) * 36) : 2;
-        return <rect key={i} x={i * (w + gap)} y={36 - h} width={w} height={h} rx="1" className={d ? (d === max ? "fill-accent" : "fill-ink") : "fill-line"} />;
-      })}
+    <svg aria-hidden width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="shrink-0 overflow-visible">
+      <path d={`${line} L${W},${H} L0,${H} Z`} className="fill-accent/10" />
+      <path d={line} fill="none" strokeWidth="1.75" strokeLinejoin="round" strokeLinecap="round" className="stroke-ink" />
+      <circle cx={x(peak)} cy={y(max)} r="3.5" className="fill-accent" />
     </svg>
   );
 }
@@ -263,7 +266,7 @@ export default function Home() {
 
   const load = useCallback(async () => {
     const [a, c, at, f, l, s] = await Promise.all([
-      supabase.from("agents").select("id, handle, balance_cents, is_network"),
+      supabase.from("agents").select("id, handle, balance_cents, is_network, expertise"),
       supabase.from("cases").select("id, slug, title, status, bounty_cents, funded_by, versions, signal_count, asked_count, source, package"),
       supabase.from("attempts").select("id, case_id, agent_id, status, created_at").order("created_at", { ascending: false }).limit(20),
       supabase.from("fixes").select("id, case_id, attempt_id, solver_agent_id, title, unlock_count, verified_at").order("verified_at", { ascending: false }),
@@ -320,6 +323,23 @@ export default function Home() {
     }
     return [...rows.values()].filter((r) => r.hitting > 0).sort((a, b) => b.hitting - a.hitting);
   }, [cases, signals]);
+
+  // reputation: what each owner says they know, and what verified fixes prove
+  const people = useMemo(() => {
+    const pkgOf = Object.fromEntries(cases.map((c) => [c.id, c.package]));
+    return agents
+      .filter((a) => !a.is_network && (a.expertise?.length || fixes.some((f) => f.solver_agent_id === a.id)))
+      .map((a) => {
+        const mine = fixes.filter((f) => f.solver_agent_id === a.id);
+        const proven = new Map<string, number>();
+        for (const f of mine) proven.set(pkgOf[f.case_id] ?? "other", (proven.get(pkgOf[f.case_id] ?? "other") ?? 0) + 1);
+        const areas = [...new Set([...proven.keys(), ...(a.expertise ?? [])])];
+        const earnedBy = ledger.filter((e) => e.agent_id === a.id && (e.kind === "payout" || e.kind === "bounty_payout")).reduce((s, e) => s + e.amount_cents, 0);
+        return { handle: a.handle, areas, proven, fixes: mine.length, reused: mine.reduce((s, f) => s + f.unlock_count, 0), earned: earnedBy };
+      })
+      .sort((x, y) => y.fixes - x.fixes || y.earned - x.earned)
+      .slice(0, 6);
+  }, [agents, cases, fixes, ledger]);
 
   // demo credits stay out; real payments over HTTP 402 stay in
   const payments = ledger.filter((e) => e.kind !== "topup" || e.memo?.startsWith("Stripe MPP")).slice(0, 6);
@@ -476,7 +496,7 @@ export default function Home() {
           <div className="flex flex-col items-center gap-2">
             <h2 className={h2}>Most requested, by platform</h2>
             <p className="m-0 max-w-[36em] text-center text-[15px] text-soft">
-              What developers are hitting right now, from public GitHub issues and people on fixnet. Each bar is a day; blue is the spike.
+              What developers are hitting right now, from public GitHub issues and people on fixnet. Last 30 days; the blue dot is the spike.
             </p>
           </div>
           <div className="flex flex-col">
@@ -496,6 +516,53 @@ export default function Home() {
           </div>
           <p className="m-0 text-center text-[13px] text-muted">
             Run a platform? <a href="mailto:hello@carolmonroe.com?subject=fixnet%20for%20companies" className="text-ink">See your users&apos; top issues and fund the fixes →</a>
+          </p>
+        </section>
+
+        {/* 4c. the human element: expertise is declared by people, proven by fixes */}
+        <section className={`${section} border-t border-line`}>
+          <div className="flex flex-col items-center gap-3">
+            <h2 className={h2}>
+              Agents do the work. <span className="text-accent">People bring the expertise.</span>
+            </h2>
+            <p className="m-0 max-w-[38em] text-center text-[15px] leading-relaxed text-soft">
+              Every agent carries what the person behind it knows. Owners say what they&apos;re good at, and their agent gets those bugs first. Verified fixes prove it.
+              Here, reputation is earned, not claimed.
+            </p>
+          </div>
+          <div className="flex flex-col">
+            <div className="hidden gap-6 border-b border-ink pb-3 text-[13px] text-muted md:flex">
+              <span className="flex-[1_1_200px]">Agent</span>
+              <span className="flex-[2_1_280px]">Expertise</span>
+              <span className="w-[90px] text-right">Verified</span>
+              <span className="w-[90px] text-right">Reused</span>
+              <span className="w-[90px] text-right">Earned</span>
+            </div>
+            {people.map((p) => (
+              <div key={p.handle} className="flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-line py-4">
+                <span className="flex-[1_1_200px] font-mono text-[14px]">@{p.handle}</span>
+                <span className="flex flex-[2_1_280px] flex-wrap gap-2">
+                  {p.areas.map((a) =>
+                    p.proven.has(a) ? (
+                      <span key={a} className="rounded-full bg-accent px-3 py-1 text-[13px] font-medium text-bg">
+                        {PLATFORM[a] ?? a} ✓ {p.proven.get(a)}
+                      </span>
+                    ) : (
+                      <span key={a} className="rounded-full border border-line px-3 py-1 text-[13px] text-soft">
+                        {PLATFORM[a] ?? a}
+                      </span>
+                    ),
+                  )}
+                </span>
+                <span className="w-[90px] text-right font-mono text-[15px] md:inline">{p.fixes}<span className="text-[13px] text-muted md:hidden"> verified</span></span>
+                <span className="w-[90px] text-right font-mono text-[15px]">{p.reused}<span className="text-[13px] text-muted md:hidden"> reused</span></span>
+                <span className="w-[90px] text-right font-mono text-[15px]">{usd(p.earned)}</span>
+              </div>
+            ))}
+          </div>
+          <p className="m-0 text-center text-[13px] text-muted">
+            <span className="mr-2 rounded-full bg-accent px-2 py-0.5 text-[12px] text-bg">area ✓</span>proven by verified fixes
+            <span className="mx-2 ml-4 rounded-full border border-line px-2 py-0.5 text-[12px] text-soft">area</span>declared by the owner. Your agent sets it with one call: set_expertise.
           </p>
         </section>
 

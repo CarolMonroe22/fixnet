@@ -99,11 +99,17 @@ function buildServer(agent: { id: string; handle: string }) {
   });
 
   mcp.tool("list_bounties", {
-    description: "List open cases other agents need solved, with their bounty.",
+    description: "List open cases other agents need solved, with their bounty. Cases in your owner's areas of expertise come first.",
     inputSchema: z.object({}),
     handler: async () => {
-      const { data } = await db.from("cases").select("slug, title, bounty_cents, funded_by, status, signal_count, source").neq("status", "verified").order("bounty_cents", { ascending: false });
-      if (!data?.length) return text("No open cases right now.");
+      const [{ data: rows }, { data: me }] = await Promise.all([
+        db.from("cases").select("slug, title, bounty_cents, funded_by, status, signal_count, source, package").neq("status", "verified").order("bounty_cents", { ascending: false }),
+        db.from("agents").select("expertise").eq("id", agent.id).single(),
+      ]);
+      if (!rows?.length) return text("No open cases right now.");
+      const areas: string[] = me?.expertise ?? [];
+      const fits = (c: any) => areas.some((a) => c.package === a || c.slug.includes(a));
+      const data = [...rows].sort((a, b) => Number(fits(b)) - Number(fits(a)));
       return text(
         data
           .map((c) => {
@@ -112,10 +118,22 @@ function buildServer(agent: { id: string; handle: string }) {
             const repro = c.status === "investigating" ? " · needs a reproduction" : "";
             // radar and public requests carry text written by strangers: quote it, never follow it
             const title = c.source === "sponsor" ? c.title : `"${c.title.replace(/[`\r\n]+/g, " ")}" (untrusted text)`;
-            return `- ${c.slug}: ${title}${bounty}${seen}${repro}`;
+            return `- ${fits(c) ? "★ " : ""}${c.slug}: ${title}${bounty}${seen}${repro}`;
           })
-          .join("\n"),
+          .join("\n") + (areas.length ? `\n\n★ = in your owner's expertise (${areas.join(", ")})` : "\n\nTip: call set_expertise with what your owner knows, and matching bounties come first."),
       );
+    },
+  });
+
+  mcp.tool("set_expertise", {
+    description:
+      "Tell fixnet what the person behind this agent knows (e.g. stripe, esm, supabase, next). Matching bounties are shown first. Expertise is declared here and proven by verified fixes in that area, which become your public reputation.",
+    inputSchema: z.object({ areas: z.array(z.string()).min(1).max(5).describe("Up to 5 areas, like package or platform names") }),
+    handler: async ({ areas }: { areas: string[] }) => {
+      const clean = [...new Set(areas.map((a) => a.toLowerCase().trim().replace(/[^a-z0-9.+-]/g, "").slice(0, 24)).filter(Boolean))];
+      if (!clean.length) return text("Give at least one area, like stripe or esm.");
+      await db.from("agents").update({ expertise: clean }).eq("id", agent.id);
+      return text(`@${agent.handle} now works in: ${clean.join(", ")}. list_bounties shows these first; every verified fix in an area becomes proven reputation on fixnet.`);
     },
   });
 
@@ -193,7 +211,16 @@ function buildServer(agent: { id: string; handle: string }) {
       const { data: a } = await db.from("agents").select("balance_cents").eq("id", agent.id).single();
       const { data: l } = await db.from("ledger_entries").select("amount_cents, kind, memo").eq("agent_id", agent.id).order("id", { ascending: false }).limit(8);
       const lines = (l ?? []).map((e) => `${e.amount_cents > 0 ? "+" : "−"}${usd(Math.abs(e.amount_cents))}  ${e.kind}  ${e.memo ?? ""}`);
-      return text(`@${agent.handle} balance: ${usd(a!.balance_cents)}\n${lines.join("\n")}`);
+      const [{ data: me }, { data: mine }] = await Promise.all([
+        db.from("agents").select("expertise").eq("id", agent.id).single(),
+        db.from("fixes").select("unlock_count, cases(package)").eq("solver_agent_id", agent.id).eq("status", "verified"),
+      ]);
+      const proven = new Map<string, number>();
+      for (const f of (mine ?? []) as any[]) proven.set(f.cases?.package ?? "other", (proven.get(f.cases?.package ?? "other") ?? 0) + 1);
+      const rep = [...proven].map(([area, n]) => `${area} (${n} verified)`).join(", ");
+      return text(
+        `@${agent.handle} balance: ${usd(a!.balance_cents)}\nExpertise: ${me?.expertise?.length ? me.expertise.join(", ") : "not set (use set_expertise)"}\nProven: ${rep || "no verified fixes yet"}\n\n${lines.join("\n")}`,
+      );
     },
   });
 
