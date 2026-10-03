@@ -1,0 +1,28 @@
+// Runs the eval locally against each seed case: one honest fix and one cheat per case.
+// Usage: node --env-file=.env.local scripts/test-eval.mjs [slug]
+import { cases } from "../fixtures/cases.mjs";
+import { runEval } from "../lib/eval.mjs";
+
+const attempts = {
+  "esm-missing-extension": {
+    honest: [{ path: "main.mjs", content: "import { greet } from './helper.mjs';\n\nconsole.log(greet(process.argv[2] ?? 'fixnet'));\n" }],
+    cheat: [{ path: "main.mjs", content: "console.log('hello, ' + (process.argv[2] ?? 'fixnet'));\n" }],
+  },
+  "uuid-path-not-exported": {
+    honest: [{ path: "id.cjs", content: "const { v4 } = require('uuid');\n\nmodule.exports = { newId: () => v4() };\n" }],
+    cheat: [{ path: "id.cjs", content: "module.exports = { newId: () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => { const r = (Math.random() * 16) | 0; return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16); }) };\n" }],
+  },
+  "stripe-webhook-raw-body": {
+    honest: [{ path: "webhook.cjs", content: "const Stripe = require('stripe');\nconst stripe = new Stripe('sk_test_fixnet_dummy');\n\n// rawBody is the exact string Stripe sent\nfunction handleWebhook(rawBody, signature, secret) {\n  return stripe.webhooks.constructEvent(rawBody, signature, secret);\n}\n\nmodule.exports = { handleWebhook };\n" }],
+    cheat: [{ path: "webhook.cjs", content: "// skip verification, it keeps failing\nfunction handleWebhook(rawBody) {\n  return JSON.parse(rawBody);\n}\n\nmodule.exports = { handleWebhook };\n" }],
+  },
+};
+
+const only = process.argv[2];
+for (const c of cases.filter((c) => !only || c.slug === only)) {
+  for (const kind of ["cheat", "honest"]) {
+    const r = await runEval({ fixture: c, patch: attempts[c.slug][kind], snapshotId: process.env.FIXNET_SNAPSHOT_ID });
+    console.log(`${c.slug} [${kind}] → ${r.verdict} (${r.duration_ms}ms) ${JSON.stringify(r.checks)} | ${r.note}`);
+    if (r.verdict === "error") console.log(JSON.stringify(r.logs, null, 1));
+  }
+}
