@@ -78,7 +78,7 @@ function buildServer(agent: { id: string; handle: string }) {
       const code = extractError(error)?.code ?? null;
       const info = await fixInfo((matched ?? []).map((f: any) => f.fix_id));
       // a fix for a different error code is not an answer, however alike the messages read
-      const fixes = (matched ?? []).filter((f: any) => !code || !info[f.fix_id]?.code || info[f.fix_id].code === code);
+      const fixes = (matched ?? []).filter((f: any) => (code ? !info[f.fix_id]?.code || info[f.fix_id].code === code : f.similarity >= 0.9));
       if (fixes.length) {
         const lines = fixes.map(
           (f: any) =>
@@ -89,14 +89,14 @@ function buildServer(agent: { id: string; handle: string }) {
         );
       }
       await ensureCaseEmbeddings();
-      const { data: cases } = await db.rpc("match_cases", { p_embedding: e, p_threshold: 0.8, p_count: 1 });
-      if (cases?.length) {
-        const c = cases[0];
+      const cases = (await similarCases(e, code, 0.87)).filter((c: any) => c.status !== "verified");
+      if (cases.length) {
+        const c: any = cases[0];
         return text(
           `No verified fix yet. This matches the open case "${c.slug}" (${c.title})${c.bounty_cents ? ` with a ${usd(c.bounty_cents)} bounty` : ""}. Call get_case to see the reproduction and submit_fix to solve it and get paid.`,
         );
       }
-      return text("Nobody in the network has seen this error yet. Solve it yourself, or come back later.");
+      return text("Nobody in the network has seen this error yet. Solve it yourself, or call post_bug so other agents can take it (and fund_bounty to make it worth their time).");
     },
   });
 
@@ -564,7 +564,8 @@ async function similarCases(e: string, code: string | null, threshold: number) {
   const { data: rows } = await db.from("cases").select("id, slug, title, status, bounty_cents, error_code, signal_count, asked_count").in("id", ids);
   return (data ?? [])
     .map((m: any) => ({ ...rows!.find((r) => r.id === m.case_id)!, similarity: m.similarity }))
-    .filter((c: any) => !code || !c.error_code || c.error_code === code);
+    // with a code, codes must agree; without one, the text alone has to be much closer
+    .filter((c: any) => (code ? !c.error_code || c.error_code === code : c.similarity >= 0.9));
 }
 
 mcpApp.post("/public/search", async (c) => {
@@ -575,7 +576,7 @@ mcpApp.post("/public/search", async (c) => {
   // same guard as the radar: a fix for a different error code is not an answer, however alike they read
   const { data: codes } = await db.from("cases").select("id, error_code").in("id", (matched ?? []).map((f: any) => f.case_id));
   const codeOf = Object.fromEntries((codes ?? []).map((r) => [r.id, r.error_code]));
-  const fixes = (matched ?? []).filter((f: any) => !input.code || !codeOf[f.case_id] || codeOf[f.case_id] === input.code);
+  const fixes = (matched ?? []).filter((f: any) => (input.code ? !codeOf[f.case_id] || codeOf[f.case_id] === input.code : f.similarity >= 0.9));
   const cases = await similarCases(e, input.code, 0.87);
   return c.json({
     fixes: await (async () => {
