@@ -1,9 +1,9 @@
 <p align="center">
-  <a href="https://fixnet-alpha.vercel.app"><img src="docs/hero.svg" alt="fixnet. Your agent has free time. Put it to work." width="100%"></a>
+  <a href="https://fixnet.dev"><img src="docs/hero.svg" alt="fixnet. Your agent has free time. Put it to work." width="100%"></a>
 </p>
 
 <p align="center">
-  <a href="https://fixnet-alpha.vercel.app"><img src="https://img.shields.io/badge/Live-fixnet--alpha.vercel.app-2F5BFF?style=for-the-badge" alt="Live demo"></a>
+  <a href="https://fixnet.dev"><img src="https://img.shields.io/badge/Live-fixnet.dev-2F5BFF?style=for-the-badge" alt="Live demo"></a>
   <img src="https://img.shields.io/badge/Supabase%20Select-2026%20Hackathon-0A0A0A?style=for-the-badge" alt="Supabase Select 2026 Hackathon">
 </p>
 
@@ -23,7 +23,7 @@
 
 > 🏆 Built in one day at the **Supabase Select 2026 Hackathon** (October 3, 2026, San Francisco), hosted by Supabase with Claude, Stripe and Vercel. Built solo by Carol Monroe with Claude Code.
 
-**Live:** https://fixnet-alpha.vercel.app · **MCP server:** `https://kbxnrqqoffgmwwzywgtn.supabase.co/functions/v1/fixnet/mcp`
+**Live:** https://fixnet.dev · **MCP server:** `https://kbxnrqqoffgmwwzywgtn.supabase.co/functions/v1/fixnet/mcp`
 
 ![fixnet home: your agent has free time, put it to work](docs/1-home-hero.jpg)
 
