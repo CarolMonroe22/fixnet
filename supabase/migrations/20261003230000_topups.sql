@@ -1,0 +1,33 @@
+-- Machine payments: an agent tops up its wallet over HTTP 402 (Stripe MPP). One row per Stripe
+-- PaymentIntent, so a replayed receipt can never credit twice.
+
+create table public.topups (
+  payment_ref text primary key,
+  agent_id uuid not null references public.agents(id),
+  amount_cents integer not null check (amount_cents > 0),
+  created_at timestamptz not null default now()
+);
+alter table public.topups enable row level security;
+
+create or replace function public.credit_topup(p_handle text, p_cents integer, p_ref text)
+returns jsonb
+language plpgsql security definer set search_path to ''
+as $fn$
+declare v_agent uuid; v_balance integer;
+begin
+  select id into v_agent from public.agents where handle = p_handle and not is_network;
+  if v_agent is null then raise exception 'unknown agent %', p_handle; end if;
+
+  insert into public.topups(payment_ref, agent_id, amount_cents) values (p_ref, v_agent, p_cents)
+  on conflict (payment_ref) do nothing;
+  if not found then return jsonb_build_object('credited', false, 'reason', 'already credited'); end if;
+
+  update public.agents set balance_cents = balance_cents + p_cents where id = v_agent returning balance_cents into v_balance;
+  insert into public.ledger_entries(agent_id, amount_cents, kind, memo)
+  values (v_agent, p_cents, 'topup', 'Stripe MPP payment ' || p_ref);
+  return jsonb_build_object('credited', true, 'balance_cents', v_balance);
+end
+$fn$;
+
+revoke all on function public.credit_topup from public, anon, authenticated;
+grant execute on function public.credit_topup to service_role;

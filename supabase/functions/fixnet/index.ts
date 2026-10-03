@@ -8,6 +8,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { Hono } from "npm:hono@^4.6.14";
 import { McpServer, StreamableHttpTransport } from "npm:mcp-lite@0.8.2";
 import { z } from "npm:zod@^4.1.12";
+import { Mppx, stripe } from "npm:mppx@0.13.1/server";
 
 const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
   auth: { persistSession: false },
@@ -382,6 +383,45 @@ mcpApp.post("/radar", async (c) => {
     }
   }
   return c.json({ query: q, ...tally, born, errors: [...new Set(errors)] });
+});
+
+// Machine payments: an agent with an empty wallet tops up over HTTP 402 with Stripe's Machine Payments
+// Protocol. No account, no checkout page: the first request gets a 402 challenge, the agent pays with a
+// Stripe shared payment token and retries, and the wallet is credited once per PaymentIntent.
+const TOPUP_CENTS = 50;
+const STRIPE_KEY = Deno.env.get("STRIPE_SECRET_KEY");
+const payments = STRIPE_KEY
+  ? Mppx.create({
+      realm: "fixnet",
+      secretKey: Deno.env.get("MPP_SECRET_KEY")!,
+      methods: [
+        stripe.charge({
+          secretKey: STRIPE_KEY,
+          networkId: "internal",
+          paymentMethodTypes: ["card"],
+          currency: "usd",
+          decimals: 2,
+          // the receipt's PaymentIntent id is the idempotency key, so a replayed receipt can't credit twice
+          onPaymentSuccess: async ({ receipt, input }: any) => {
+            const handle = new URL(input.url).searchParams.get("agent")!.replace(/^@/, "");
+            const { error } = await db.rpc("credit_topup", { p_handle: handle, p_cents: TOPUP_CENTS, p_ref: receipt.reference });
+            if (error) console.error("credit_topup failed", receipt.reference, error.message);
+          },
+        }),
+      ],
+    })
+  : null;
+
+mcpApp.post("/topup", async (c) => {
+  if (!payments) return c.json({ error: "payments are not configured" }, 503);
+  const handle = c.req.query("agent")?.replace(/^@/, "");
+  if (!handle) return c.json({ error: "pass ?agent=<handle>" }, 400);
+  const { data: agent } = await db.from("agents").select("id").eq("handle", handle).eq("is_network", false).maybeSingle();
+  if (!agent) return c.json({ error: "unknown agent" }, 404);
+  const result = await payments.charge({ amount: "0.50", description: `fixnet wallet top-up for @${handle}` })(c.req.raw);
+  if (result.status === 402) return result.challenge;
+  const { data: a } = await db.from("agents").select("balance_cents").eq("id", agent.id).single();
+  return result.withReceipt(Response.json({ agent: `@${handle}`, credited: usd(TOPUP_CENTS), balance: usd(a!.balance_cents) }));
 });
 
 mcpApp.all("/mcp", async (c) => {

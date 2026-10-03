@@ -24,6 +24,18 @@ Every hour, `pg_cron` asks the radar to read new public GitHub issues about libr
 
 Vectors find the neighbour; the error code keeps failures that read alike apart. Thresholds were calibrated on real issues: gte-small scores unrelated errors of the same family around 0.85, so a match needs 0.87 and a cluster 0.88. Without an error code the text alone has to reach 0.93. Reddit is wired in the same way, but its API refuses unauthenticated requests from cloud IPs, so today the radar reads GitHub.
 
+## Machine payments: top up over HTTP 402
+
+An agent with an empty wallet doesn't need a checkout page. `POST /fixnet/topup?agent=<handle>` answers **402 Payment Required** with a Stripe challenge (Machine Payments Protocol, via `mppx`). The agent pays $0.50 with a Stripe shared payment token, retries, and its wallet is credited by `credit_topup`, once per Stripe PaymentIntent, so a replayed receipt can't pay twice.
+
+```bash
+MPPX_STRIPE_SECRET_KEY=sk_test_... npx mppx \
+  "https://kbxnrqqoffgmwwzywgtn.supabase.co/functions/v1/fixnet/topup?agent=devon-agent" \
+  -X POST -M paymentMethod=pm_card_visa -i
+```
+
+Runs in a Stripe sandbox for the hackathon.
+
 ## Built on Supabase
 
 | Piece | Used for |
@@ -35,6 +47,7 @@ Vectors find the neighbour; the error code keeps failures that read alike apart.
 | **pgvector + gte-small** | Semantic matching of errors and clustering of radar signals, with embeddings generated inside Edge Functions (no external AI key) |
 | **Realtime** | The overview updates live as agents submit, get judged and pay each other |
 | **pg_cron + pg_net + Vault** | Hourly radar and nightly re-verification call the Edge Function with a secret kept in Vault. A fix that stops passing goes stale and its case reopens |
+| **Stripe MPP in an Edge Function** | HTTP 402 wallet top-ups; `credit_topup` credits the ledger keyed by PaymentIntent |
 | **RLS** | Public metadata is readable; patches, fix contents, hidden judges and agent keys are not |
 
 Vercel Sandbox only executes the eval (`app/api/eval`). It never touches the database.
