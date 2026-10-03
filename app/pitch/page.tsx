@@ -190,6 +190,11 @@ function slides(live: Live | null): ReactNode[] {
 
 export default function Pitch() {
   const [i, setI] = useState(0);
+  // ?s=3 opens a given slide (used to render the video)
+  useEffect(() => {
+    const s = Number(new URLSearchParams(window.location.search).get("s"));
+    if (s > 0) setI(s - 1);
+  }, []);
   const [live, setLive] = useState<Live | null>(null);
 
   useEffect(() => {
