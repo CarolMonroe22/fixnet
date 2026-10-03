@@ -30,6 +30,13 @@ async function ensureCaseEmbeddings() {
   }
 }
 
+// Cases born from the radar have demand but no reproduction yet: show where they were seen.
+async function radarCaseText(c: { id: string; title: string; error_message: string; bounty_cents: number }) {
+  const { data: seen } = await db.from("signals").select("source, title, url").eq("case_id", c.id).order("posted_at", { ascending: false }).limit(8);
+  const list = (seen ?? []).map((s) => `- [${s.source}] ${s.title} ${s.url}`).join("\n");
+  return `${c.error_message}\nSpotted by the fixnet radar, no reproduction yet.${c.bounty_cents ? ` Pledged bounty: ${usd(c.bounty_cents)}.` : ""}\n\nSeen in:\n${list}`;
+}
+
 function buildServer(agent: { id: string; handle: string }) {
   const mcp = new McpServer({
     name: "fixnet",
@@ -89,9 +96,18 @@ function buildServer(agent: { id: string; handle: string }) {
     description: "List open cases other agents need solved, with their bounty.",
     inputSchema: z.object({}),
     handler: async () => {
-      const { data } = await db.from("cases").select("slug, title, bounty_cents, funded_by, status").neq("status", "verified").order("bounty_cents", { ascending: false });
+      const { data } = await db.from("cases").select("slug, title, bounty_cents, funded_by, status, signal_count").neq("status", "verified").order("bounty_cents", { ascending: false });
       if (!data?.length) return text("No open cases right now.");
-      return text(data.map((c) => `- ${c.slug}: ${c.title}${c.bounty_cents ? ` · ${usd(c.bounty_cents)} bounty by ${c.funded_by}` : ""}`).join("\n"));
+      return text(
+        data
+          .map((c) => {
+            const bounty = c.bounty_cents ? ` · ${usd(c.bounty_cents)} bounty by ${c.funded_by}` : "";
+            const seen = c.signal_count ? ` · seen in ${c.signal_count} public threads` : "";
+            const repro = c.status === "investigating" ? " · needs a reproduction" : "";
+            return `- ${c.slug}: ${c.title}${bounty}${seen}${repro}`;
+          })
+          .join("\n"),
+      );
     },
   });
 
@@ -101,7 +117,8 @@ function buildServer(agent: { id: string; handle: string }) {
     handler: async ({ slug }: { slug: string }) => {
       const { data: c } = await db.from("cases").select("id, slug, title, error_message, versions, bounty_cents").eq("slug", slug).single();
       if (!c) return text("Case not found.");
-      const { data: fx } = await db.from("case_fixtures").select("files, repro_cmd").eq("case_id", c.id).single();
+      const { data: fx } = await db.from("case_fixtures").select("files, repro_cmd").eq("case_id", c.id).maybeSingle();
+      if (!fx) return text(await radarCaseText(c));
       const { data: prev } = await db.from("attempts").select("id, status, summary, verdict_note").eq("case_id", c.id).order("created_at");
       const files = (fx!.files as { path: string; content: string }[]).map((f) => `--- ${f.path}\n${f.content}`).join("\n");
       const history = prev?.length ? `\n\nPrevious attempts (build on them):\n${prev.map((p) => `- ${p.id} [${p.status}] ${p.summary}${p.verdict_note ? ` → ${p.verdict_note}` : ""}`).join("\n")}` : "";
@@ -120,7 +137,8 @@ function buildServer(agent: { id: string; handle: string }) {
     handler: async ({ slug, summary, files, parent_attempt_id }: any) => {
       const { data: c } = await db.from("cases").select("id, title, error_message").eq("slug", slug).single();
       if (!c) return text("Case not found.");
-      const { data: fx } = await db.from("case_fixtures").select("*").eq("case_id", c.id).single();
+      const { data: fx } = await db.from("case_fixtures").select("*").eq("case_id", c.id).maybeSingle();
+      if (!fx) return text("This case was spotted by the radar and has no reproduction yet, so there is nothing to judge a fix against. Call get_case to see where it was seen.");
       const { data: at, error } = await db
         .from("attempts")
         .insert({ case_id: c.id, agent_id: agent.id, summary, parent_attempt_id: parent_attempt_id ?? null, status: "running" })
@@ -251,6 +269,117 @@ mcpApp.post("/reverify", async (c) => {
   // aggregate counts only: eval notes stay in the database
   const count = (v: string) => results.filter((r) => r.verdict === v).length;
   return c.json({ checked: results.length, passed: count("passed"), stale: count("rejected"), skipped: results.length - count("passed") - count("rejected") });
+});
+
+// Radar (pg_cron → pg_net → here). Public GitHub issues and Reddit posts about library errors become
+// signals; Postgres + pgvector decide whether each one adds demand to a known case or births a new one.
+const RADAR = [
+  { q: '"ERR_PACKAGE_PATH_NOT_EXPORTED" "./v4"', pkg: "uuid" },
+  { q: '"No signatures found matching the expected signature for payload"', pkg: "stripe" },
+  { q: '"ERR_MODULE_NOT_FOUND" "Did you mean to import"', pkg: "node" },
+  { q: '"ERR_REQUIRE_ESM"', pkg: "node" },
+  { q: '"ERR_UNSUPPORTED_DIR_IMPORT"', pkg: "node" },
+];
+// An actual error line ("TypeError: …", "Error [ERR_X]: …"), not prose that mentions one.
+const ERROR_LINE = /(?:^|[\s(>`'"])((?:[A-Z][A-Za-z]*)?(?:Error|Exception)(?: \[[A-Z_]+\])?: [^\n]{8,})/m;
+
+// The first error line, with machine-specific paths and positions stripped, and its code:
+// the Node ERR_* code when there is one, else the error class (generic Error/TypeError carry no code).
+function extractError(t: string) {
+  const m = t.match(ERROR_LINE);
+  if (!m) return null;
+  const line = m[1];
+  const cls = line.match(/^([A-Za-z]+)/)![1];
+  const code = line.match(/\bERR_[A-Z_]{3,}/)?.[0] ?? (["Error", "TypeError", "SyntaxError", "ReferenceError", "RangeError"].includes(cls) ? null : cls);
+  const error = line
+    .replace(/[`*>#]/g, "")
+    .replace(/(?<=^|[\s'"(])(?:file:\/\/)?(?:[A-Za-z]:\\|\/[\w.@-]+\/)[^\s'"`),]+/g, "<path>")
+    .replace(/:\d+(?::\d+)?/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+  return { error, code };
+}
+
+type Post = { source: "github" | "reddit"; url: string; title: string; body: string; posted_at: string | null };
+
+async function searchGithub(q: string): Promise<Post[]> {
+  const headers: Record<string, string> = { accept: "application/vnd.github+json", "user-agent": "fixnet-radar" };
+  const token = Deno.env.get("GITHUB_TOKEN");
+  if (token) headers.authorization = `Bearer ${token}`;
+  const res = await fetch(`https://api.github.com/search/issues?q=${encodeURIComponent(`${q} is:issue`)}&sort=created&order=desc&per_page=15`, { headers });
+  if (!res.ok) throw new Error(`github ${res.status}`);
+  const { items } = await res.json();
+  return (items ?? []).map((i: any) => ({ source: "github", url: i.html_url, title: i.title, body: (i.body ?? "").slice(0, 6000), posted_at: i.created_at }));
+}
+
+async function searchReddit(q: string): Promise<Post[]> {
+  const res = await fetch(`https://www.reddit.com/search.json?q=${encodeURIComponent(q)}&sort=new&limit=4&type=link`, { headers: { "user-agent": "fixnet-radar/0.1" } });
+  if (!res.ok) throw new Error(`reddit ${res.status}`);
+  const { data } = await res.json();
+  return (data?.children ?? []).map(({ data: p }: any) => ({
+    source: "reddit",
+    url: `https://www.reddit.com${p.permalink}`,
+    title: p.title,
+    body: (p.selftext ?? "").slice(0, 6000),
+    posted_at: p.created_utc ? new Date(p.created_utc * 1000).toISOString() : null,
+  }));
+}
+
+mcpApp.post("/radar", async (c) => {
+  if (!secretMatches(c.req.header("x-cron-secret"), Deno.env.get("CRON_SECRET"))) return c.json({ error: "unauthorized" }, 401);
+  await ensureCaseEmbeddings();
+  // Embeddings are CPU-bound and an Edge Function has a small CPU budget, so each call runs one query.
+  const opts = await c.req.json().catch(() => ({}));
+  const i = Number.isInteger(opts.query) ? opts.query : Math.floor(Date.now() / 3_600_000) % RADAR.length;
+  const { q, pkg } = RADAR[i % RADAR.length];
+  const tally: Record<string, number> = {};
+  const errors: string[] = [];
+  const born: string[] = [];
+  {
+    for (const search of [searchGithub, searchReddit]) {
+      let posts: Post[] = [];
+      try {
+        posts = await search(q);
+      } catch (e) {
+        errors.push(String((e as Error).message));
+        continue;
+      }
+      const { data: known } = await db.from("signals").select("url").in("url", posts.map((p) => p.url));
+      const seen = new Set((known ?? []).map((k) => k.url));
+      for (const p of posts) {
+        if (seen.has(p.url)) {
+          tally.duplicate = (tally.duplicate ?? 0) + 1;
+          continue;
+        }
+        const found = extractError(`${p.title}\n${p.body}`);
+        if (!found) {
+          tally.no_error_line = (tally.no_error_line ?? 0) + 1;
+          continue;
+        }
+        const { data, error: rpcError } = await db.rpc("radar_ingest", {
+          p_source: p.source,
+          p_url: p.url,
+          p_title: p.title,
+          p_error: found.error,
+          p_code: found.code,
+          p_package: pkg,
+          p_posted_at: p.posted_at,
+          p_embedding: await embed(`${found.error}\n${pkg}`),
+          // calibrated on real issues: gte-small puts unrelated errors of one family around 0.85
+          p_case_threshold: opts.case_threshold ?? 0.87,
+          p_cluster_threshold: opts.cluster_threshold ?? 0.88,
+        });
+        if (rpcError) {
+          errors.push(rpcError.message);
+          continue;
+        }
+        tally[data.action] = (tally[data.action] ?? 0) + 1;
+        if (data.action === "born") born.push(data.case);
+      }
+    }
+  }
+  return c.json({ query: q, ...tally, born, errors: [...new Set(errors)] });
 });
 
 mcpApp.all("/mcp", async (c) => {
