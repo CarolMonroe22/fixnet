@@ -40,6 +40,9 @@ declare
   per_signal constant integer := 50;   -- every person hitting the error is a future $0.50 unlock
   cap constant integer := 2500;
 begin
+  -- one ingest at a time, so two concurrent runs can't each birth a case for the same cluster
+  perform pg_advisory_xact_lock(hashtext('radar_ingest'));
+
   insert into public.signals(source, url, title, error_text, error_code, package, posted_at, embedding)
   values (p_source, p_url, left(p_title, 300), left(p_error, 500), p_code, p_package, p_posted_at, p_embedding)
   on conflict (url) do nothing returning id into v_signal;
