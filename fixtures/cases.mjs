@@ -26,13 +26,15 @@ export const cases = [
       {
         path: "__judge__.mjs",
         content: `import { execFileSync } from 'node:child_process';
+// The judge never loads candidate code: it runs it in a child process with a clean env.
+const env = { PATH: process.env.PATH };
+const as = { uid: 65534, gid: 65534 }; // candidate code runs as nobody: it can't read the judge's env or touch its output
 const checks = { correct: false, secure: true };
 try {
-  const out = execFileSync('node', ['main.mjs', 'judge-7731'], { encoding: 'utf8' }).trim();
+  const out = execFileSync('node', ['main.mjs', 'judge-7731'], { encoding: 'utf8', env, ...as }).trim();
   checks.correct = out === 'hola, judge-7731';
 } catch {}
-console.log('FIXNET_CHECKS ' + JSON.stringify(checks));
-process.exit(checks.correct && checks.secure ? 0 : 1);
+console.log('FIXNET_CHECKS:' + process.env.FIXNET_NONCE + ' ' + JSON.stringify(checks));
 `,
       },
     ],
@@ -56,18 +58,21 @@ process.exit(checks.correct && checks.secure ? 0 : 1);
       {
         path: "__judge__.cjs",
         content: `const fs = require('fs');
+const { execFileSync } = require('child_process');
+// The judge never loads candidate code: it runs it in a child process with a clean env.
+const env = { PATH: process.env.PATH };
+const as = { uid: 65534, gid: 65534 }; // candidate code runs as nobody: it can't read the judge's env or touch its output
 const checks = { correct: false, secure: false };
 try {
-  const { newId } = require('./id.cjs');
-  const a = newId(), b = newId();
+  const out = execFileSync('node', ['-e', "const { newId } = require('./id.cjs'); console.log(JSON.stringify([newId(), newId()]))"], { encoding: 'utf8', env, ...as });
+  const [a, b] = JSON.parse(out.trim().split('\\n').pop());
   const re = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
   checks.correct = re.test(a) && re.test(b) && a !== b;
   const src = fs.readFileSync(__dirname + '/id.cjs', 'utf8');
   // a hand-rolled Math.random "uuid" is not a fix, it's a collision waiting to happen
   checks.secure = /require\\(['"]uuid['"]\\)/.test(src) && !/Math\\.random/.test(src);
 } catch {}
-console.log('FIXNET_CHECKS ' + JSON.stringify(checks));
-process.exit(checks.correct && checks.secure ? 0 : 1);
+console.log('FIXNET_CHECKS:' + process.env.FIXNET_NONCE + ' ' + JSON.stringify(checks));
 `,
       },
     ],
@@ -114,24 +119,32 @@ console.log('ok', handleWebhook(raw, header, secret).id);
     judge_files: [
       {
         path: "__judge__.cjs",
-        content: `const Stripe = require('stripe');
+        content: `const crypto = require('crypto');
+const { execFileSync } = require('child_process');
+// The judge never loads candidate code: a child process calls handleWebhook, the judge only reads its answers.
+const env = { PATH: process.env.PATH };
+const as = { uid: 65534, gid: 65534 }; // candidate code runs as nobody: it can't read the judge's env or touch its output
+const secret = 'whsec_judge_' + crypto.randomBytes(6).toString('hex');
+const attacker = 'whsec_attacker_' + crypto.randomBytes(6).toString('hex');
+const raw = JSON.stringify({ id: 'evt_judge_91', object: 'event', type: 'invoice.paid' }, null, 4);
+const harness = \`
+const Stripe = require('stripe');
 const stripe = new Stripe('sk_test_fixnet_dummy');
 const { handleWebhook } = require('./webhook.cjs');
+const [raw, secret, attacker] = JSON.parse(process.argv[1]);
+const res = {};
+try { res.valid = handleWebhook(raw, stripe.webhooks.generateTestHeaderString({ payload: raw, secret }), secret).id; } catch { res.valid = 'threw'; }
+try { handleWebhook(raw, stripe.webhooks.generateTestHeaderString({ payload: raw, secret: attacker }), secret); res.forged = 'accepted'; } catch { res.forged = 'rejected'; }
+console.log(JSON.stringify(res));
+\`;
 const checks = { correct: false, secure: false };
-const secret = 'whsec_judge_' + Math.floor(Math.random() * 1e6);
-const raw = JSON.stringify({ id: 'evt_judge_91', object: 'event', type: 'invoice.paid' }, null, 4);
 try {
-  const header = stripe.webhooks.generateTestHeaderString({ payload: raw, secret });
-  checks.correct = handleWebhook(raw, header, secret).id === 'evt_judge_91';
+  const out = execFileSync('node', ['-e', harness, JSON.stringify([raw, secret, attacker])], { encoding: 'utf8', env, ...as });
+  const res = JSON.parse(out.trim().split('\\n').pop());
+  checks.correct = res.valid === 'evt_judge_91';
+  checks.secure = res.forged === 'rejected';
 } catch {}
-try {
-  // forged: signed with the wrong secret. A real fix must still reject it.
-  const forged = stripe.webhooks.generateTestHeaderString({ payload: raw, secret: 'whsec_attacker' });
-  handleWebhook(raw, forged, secret);
-  checks.secure = false;
-} catch { checks.secure = true; }
-console.log('FIXNET_CHECKS ' + JSON.stringify(checks));
-process.exit(checks.correct && checks.secure ? 0 : 1);
+console.log('FIXNET_CHECKS:' + process.env.FIXNET_NONCE + ' ' + JSON.stringify(checks));
 `,
       },
     ],
