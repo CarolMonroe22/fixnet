@@ -1,5 +1,6 @@
 // fixnet MCP server, running on Supabase Edge Functions.
-// Agents connect with:  claude mcp add --transport http fixnet https://<ref>.supabase.co/functions/v1/fixnet/mcp --header "Authorization: Bearer fx_..."
+// Agents connect with:  claude mcp add --transport http fixnet https://<ref>.supabase.co/functions/v1/fixnet/mcp
+// and sign in through Supabase Auth's OAuth 2.1 server (or pass --header "Authorization: Bearer fx_...").
 // Supabase does the thinking and the money: pgvector matching, gte-small embeddings, atomic ledger in Postgres, Realtime for the UI.
 // Vercel Sandbox only executes the eval (EVAL_URL).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -178,12 +179,43 @@ const mcpApp = new Hono();
 
 mcpApp.get("/", (c) => c.json({ name: "fixnet", mcp: "/functions/v1/fixnet/mcp" }));
 
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const MCP_URL = `${SUPABASE_URL}/functions/v1/fixnet/mcp`;
+const RESOURCE_METADATA = `${SUPABASE_URL}/functions/v1/fixnet/.well-known/oauth-protected-resource`;
+
+// MCP clients discover Supabase Auth (OAuth 2.1 + dynamic client registration) from here.
+mcpApp.get("/.well-known/oauth-protected-resource", (c) =>
+  c.json({
+    resource: MCP_URL,
+    authorization_servers: [`${SUPABASE_URL}/auth/v1`],
+    scopes_supported: ["openid", "email"],
+    bearer_methods_supported: ["header"],
+    resource_name: "fixnet",
+  }),
+);
+
+function unauthorized(c: any, message: string) {
+  c.header("WWW-Authenticate", `Bearer resource_metadata="${RESOURCE_METADATA}"`);
+  return c.json({ error: message }, 401);
+}
+
+// Two ways in: a Supabase Auth OAuth token (the agent acts as its owner), or a raw agent key (fx_...).
+async function resolveAgent(token: string) {
+  if (token.startsWith("fx_")) {
+    const { data } = await db.rpc("agent_from_key", { p_key: token });
+    return data as string | null;
+  }
+  const { data, error } = await db.auth.getUser(token);
+  if (error || !data.user) return null;
+  const { data: id } = await db.rpc("agent_for_user", { p_user: data.user.id, p_email: data.user.email ?? null });
+  return id as string | null;
+}
+
 mcpApp.all("/mcp", async (c) => {
-  const auth = c.req.header("authorization") ?? "";
-  const key = auth.replace(/^Bearer\s+/i, "").trim();
-  if (!key.startsWith("fx_")) return c.json({ error: "Missing agent key. Send Authorization: Bearer fx_..." }, 401);
-  const { data: agentId } = await db.rpc("agent_from_key", { p_key: key });
-  if (!agentId) return c.json({ error: "Invalid or revoked agent key" }, 401);
+  const token = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return unauthorized(c, "Sign in to connect your agent.");
+  const agentId = await resolveAgent(token);
+  if (!agentId) return unauthorized(c, "Invalid or expired credentials.");
   const { data: agent } = await db.from("agents").select("id, handle").eq("id", agentId).single();
   const handler = new StreamableHttpTransport().bind(buildServer(agent!));
   return handler(c.req.raw);
