@@ -702,7 +702,7 @@ mcpApp.post("/me/expertise", async (c) => {
 
 // People top up with Stripe Checkout (agents use the 402 route). No webhook: on the way back we ask Stripe
 // directly whether this session was paid and belongs to this agent, then credit once per PaymentIntent.
-const ORIGINS = ["http://localhost:3000", "https://fixnet-alpha.vercel.app"];
+const ORIGINS = ["http://localhost:3000", "https://fixnet.dev", "https://www.fixnet.dev", "https://fixnet-alpha.vercel.app"];
 
 async function stripeApi(path: string, init: RequestInit = {}) {
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
@@ -717,7 +717,7 @@ mcpApp.post("/me/checkout", async (c) => {
   if (!id) return c.json({ error: "Sign in first." }, 401);
   if (!STRIPE_KEY) return c.json({ error: "Payments are not configured." }, 503);
   const { origin } = await c.req.json().catch(() => ({}));
-  const base = ORIGINS.includes(origin) ? origin : ORIGINS[1];
+  const base = ORIGINS.includes(origin) ? origin : "https://fixnet-alpha.vercel.app";
   const form = new URLSearchParams({
     mode: "payment",
     "line_items[0][price_data][currency]": "usd",
