@@ -287,6 +287,11 @@ const RADAR = [
   { q: '"ERR_MODULE_NOT_FOUND" "Did you mean to import"', pkg: "node" },
   { q: '"ERR_REQUIRE_ESM"', pkg: "node" },
   { q: '"ERR_UNSUPPORTED_DIR_IMPORT"', pkg: "node" },
+  { q: '"ERR_UNKNOWN_FILE_EXTENSION" ".ts"', pkg: "ts-node" },
+  { q: '"ERR_OSSL_EVP_UNSUPPORTED"', pkg: "webpack" },
+  { q: '"PrismaClientInitializationError"', pkg: "prisma" },
+  { q: '"ERR_INVALID_ARG_TYPE" "must be of type string"', pkg: "node" },
+  { q: '"ERR_PACKAGE_PATH_NOT_EXPORTED"', pkg: "node" },
 ];
 // An actual error line ("TypeError: …", "Error [ERR_X]: …"), not prose that mentions one.
 const ERROR_LINE = /(?:^|[\s(>`'"])((?:[A-Z][A-Za-z]*)?(?:Error|Exception)(?: \[[A-Z_]+\])?: [^\n]{8,})/m;
