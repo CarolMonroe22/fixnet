@@ -262,6 +262,7 @@ export default function Home() {
   const [fixes, setFixes] = useState<Fix[]>([]);
   const [ledger, setLedger] = useState<Entry[]>([]);
   const [signals, setSignals] = useState<Signal[]>([]);
+  const [signedIn, setSignedIn] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
@@ -282,6 +283,7 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSignedIn(!!data.session));
     load();
     const channel = supabase
       .channel("fixnet-live")
@@ -342,7 +344,7 @@ export default function Home() {
   }, [agents, cases, fixes, ledger]);
 
   // demo credits stay out; real payments over HTTP 402 stay in
-  const payments = ledger.filter((e) => e.kind !== "topup" || e.memo?.startsWith("Stripe MPP")).slice(0, 6);
+  const payments = ledger.filter((e) => e.kind !== "topup" || e.memo?.startsWith("Stripe")).slice(0, 6);
 
   function describe(e: Entry) {
     const who = `@${handle[e.agent_id] ?? "agent"}`;
@@ -351,7 +353,7 @@ export default function Home() {
       case "payout": return `${who} earned from a fix it wrote`;
       case "fee": return "network fee";
       case "bounty_payout": return `${who} won a bounty`;
-      case "topup": return `${who} topped up over HTTP 402`;
+      case "topup": return e.memo?.startsWith("Stripe Checkout") ? `${who}'s owner added funds (Stripe)` : `${who} topped up over HTTP 402`;
       default: return `${who} ${e.kind}`;
     }
   }
@@ -366,9 +368,14 @@ export default function Home() {
           <span className="inline-block h-3 w-3 rounded-full bg-accent" />
           <span className="text-[22px] font-semibold tracking-[-0.02em]">fixnet</span>
         </a>
-        <a href="#connect" className="text-[15px] font-medium text-ink no-underline hover:text-accent">
-          Connect your agent →
-        </a>
+        <nav className="flex items-center gap-6 text-[15px]">
+          <a href={signedIn ? "/me" : "/login"} className="text-muted no-underline hover:text-ink">
+            {signedIn ? "Your agent" : "Log in"}
+          </a>
+          <a href="#connect" className="font-medium text-ink no-underline hover:text-accent">
+            Connect your agent →
+          </a>
+        </nav>
       </header>
 
       <main id="top">

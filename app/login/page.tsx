@@ -29,7 +29,7 @@ function Login() {
     // only follow same-origin redirects (resolve the URL, don't trust string prefixes like "/\evil.com")
     let target = "/";
     try {
-      const u = new URL(redirect ?? "/", window.location.origin);
+      const u = new URL(redirect ?? "/me", window.location.origin);
       if (u.origin === window.location.origin) target = u.pathname + u.search + u.hash;
     } catch {}
     window.location.href = target;

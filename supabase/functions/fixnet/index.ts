@@ -552,6 +552,108 @@ mcpApp.post("/public/plus-one", async (c) => {
   return c.json({ hitting: data });
 });
 
+// "Your agent": the owner's own view on the web. Same sign-in as the MCP (a Supabase session), only ever their agent.
+mcpApp.use("/me/*", cors({ origin: "*", allowMethods: ["GET", "POST", "OPTIONS"], allowHeaders: ["content-type", "authorization"] }));
+mcpApp.use("/me", cors({ origin: "*", allowMethods: ["GET", "OPTIONS"], allowHeaders: ["content-type", "authorization"] }));
+
+async function ownerAgent(c: any) {
+  const token = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token || token.startsWith("fx_")) return null;
+  return await resolveAgent(token);
+}
+
+mcpApp.get("/me", async (c) => {
+  const id = await ownerAgent(c);
+  if (!id) return c.json({ error: "Sign in first." }, 401);
+  const [{ data: me }, { data: mine }, { data: ledger }, { data: open }] = await Promise.all([
+    db.from("agents").select("handle, balance_cents, expertise").eq("id", id).single(),
+    db.from("fixes").select("title, unlock_count, cases(package)").eq("solver_agent_id", id).eq("status", "verified"),
+    db.from("ledger_entries").select("amount_cents, kind, memo, created_at").eq("agent_id", id).order("id", { ascending: false }).limit(10),
+    db.from("cases").select("slug, title, bounty_cents, status, package, signal_count, asked_count").neq("status", "verified").order("bounty_cents", { ascending: false }),
+  ]);
+  const areas: string[] = me?.expertise ?? [];
+  const proven: Record<string, number> = {};
+  for (const f of (mine ?? []) as any[]) proven[f.cases?.package ?? "other"] = (proven[f.cases?.package ?? "other"] ?? 0) + 1;
+  const fits = (k: any) => areas.some((a) => k.package === a || k.slug.includes(a));
+  const { data: all } = await db.from("ledger_entries").select("amount_cents, kind").eq("agent_id", id);
+  const sum = (kinds: string[]) => (all ?? []).filter((e) => kinds.includes(e.kind)).reduce((s, e) => s + e.amount_cents, 0);
+  const earned = sum(["payout", "bounty_payout"]);
+  return c.json({
+    spent_cents: -sum(["purchase"]),
+    added_cents: sum(["topup"]),
+    handle: me!.handle,
+    balance_cents: me!.balance_cents,
+    expertise: areas,
+    proven,
+    fixes: (mine ?? []).map((f: any) => ({ title: f.title, used: f.unlock_count })),
+    earned_cents: earned,
+    ledger: ledger ?? [],
+    bounties: (open ?? [])
+      .map((k: any) => ({ slug: k.slug, title: k.title, bounty_cents: k.bounty_cents, hitting: k.signal_count + k.asked_count, needs_repro: k.status === "investigating", fits: fits(k) }))
+      .sort((x: any, y: any) => Number(y.fits) - Number(x.fits)),
+  });
+});
+
+mcpApp.post("/me/expertise", async (c) => {
+  const id = await ownerAgent(c);
+  if (!id) return c.json({ error: "Sign in first." }, 401);
+  const { areas } = await c.req.json().catch(() => ({}));
+  if (!Array.isArray(areas)) return c.json({ error: "Send a list of areas." }, 400);
+  const clean = [...new Set(areas.map((a: unknown) => String(a).toLowerCase().trim().replace(/[^a-z0-9.+-]/g, "").slice(0, 24)).filter(Boolean))].slice(0, 5);
+  await db.from("agents").update({ expertise: clean }).eq("id", id);
+  return c.json({ expertise: clean });
+});
+
+// People top up with Stripe Checkout (agents use the 402 route). No webhook: on the way back we ask Stripe
+// directly whether this session was paid and belongs to this agent, then credit once per PaymentIntent.
+const ORIGINS = ["http://localhost:3000", "https://fixnet-alpha.vercel.app"];
+
+async function stripeApi(path: string, init: RequestInit = {}) {
+  const res = await fetch(`https://api.stripe.com/v1/${path}`, {
+    ...init,
+    headers: { authorization: `Bearer ${STRIPE_KEY}`, "content-type": "application/x-www-form-urlencoded", ...(init.headers ?? {}) },
+  });
+  return { ok: res.ok, data: await res.json() };
+}
+
+mcpApp.post("/me/checkout", async (c) => {
+  const id = await ownerAgent(c);
+  if (!id) return c.json({ error: "Sign in first." }, 401);
+  if (!STRIPE_KEY) return c.json({ error: "Payments are not configured." }, 503);
+  const { origin } = await c.req.json().catch(() => ({}));
+  const base = ORIGINS.includes(origin) ? origin : ORIGINS[1];
+  const form = new URLSearchParams({
+    mode: "payment",
+    "line_items[0][price_data][currency]": "usd",
+    "line_items[0][price_data][unit_amount]": "500",
+    "line_items[0][price_data][product_data][name]": "fixnet wallet credits",
+    "line_items[0][quantity]": "1",
+    "metadata[agent_id]": id,
+    success_url: `${base}/me?session_id={CHECKOUT_SESSION_ID}`,
+    cancel_url: `${base}/me`,
+  });
+  const { ok, data } = await stripeApi("checkout/sessions", { method: "POST", body: form });
+  if (!ok) return c.json({ error: "Could not start checkout." }, 502);
+  return c.json({ url: data.url });
+});
+
+mcpApp.post("/me/checkout/confirm", async (c) => {
+  const id = await ownerAgent(c);
+  if (!id) return c.json({ error: "Sign in first." }, 401);
+  const { session_id } = await c.req.json().catch(() => ({}));
+  if (typeof session_id !== "string" || !session_id.startsWith("cs_")) return c.json({ error: "Unknown payment." }, 400);
+  const { ok, data } = await stripeApi(`checkout/sessions/${encodeURIComponent(session_id)}`);
+  if (!ok || data.payment_status !== "paid" || data.metadata?.agent_id !== id) return c.json({ error: "Payment not confirmed." }, 402);
+  const { data: me } = await db.from("agents").select("handle").eq("id", id).single();
+  const { data: credit } = await db.rpc("credit_topup", {
+    p_handle: me!.handle,
+    p_cents: data.amount_total,
+    p_ref: data.payment_intent ?? data.id,
+    p_memo: "Stripe Checkout payment",
+  });
+  return c.json(credit);
+});
+
 mcpApp.all("/mcp", async (c) => {
   const token = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
   if (!token) return unauthorized(c, "Sign in to connect your agent.");
