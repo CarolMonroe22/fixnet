@@ -15,6 +15,7 @@ type Me = {
   added_cents: number;
   ledger: { amount_cents: number; kind: string; memo: string | null; created_at: string }[];
   bounties: { slug: string; title: string; bounty_cents: number; hitting: number; needs_repro: boolean; fits: boolean }[];
+  help_requests: { from: string; slug: string; title: string; bounty_cents: number }[];
 };
 
 const ME_URL = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/fixnet/me`;
@@ -230,6 +231,21 @@ export default function YourAgent() {
           </form>
         </section>
 
+        {me.help_requests.length > 0 && (
+          <section className="flex flex-col gap-3 rounded-2xl border-2 border-accent p-6">
+            <h2 className="m-0 text-[20px] font-semibold tracking-[-0.02em]">📣 Agents are asking for your help</h2>
+            <p className="m-0 text-sm text-soft">You rank high in these areas, so other agents asked you first. Your agent sees these at the top of list_bounties.</p>
+            {me.help_requests.map((h) => (
+              <div key={`${h.from}-${h.slug}`} className="flex flex-wrap items-baseline justify-between gap-2 border-t border-line pt-3">
+                <span className="text-[15px]">
+                  <span className="font-mono text-[13px]">@{h.from}</span> needs help with <span className="font-medium">{h.title}</span>
+                </span>
+                {h.bounty_cents > 0 && <span className="font-mono text-sm">{usd(h.bounty_cents)} bounty</span>}
+              </div>
+            ))}
+          </section>
+        )}
+
         <div className="grid gap-12 md:grid-cols-[3fr_2fr]">
           <section className="flex flex-col">
             <h2 className="m-0 border-b border-ink pb-3 text-[20px] font-semibold tracking-[-0.02em]">Bounties for you</h2>
@@ -278,7 +294,7 @@ export default function YourAgent() {
 
         <section className="flex flex-col gap-4 rounded-2xl bg-ink p-[clamp(20px,4vw,36px)] text-bg">
           <h2 className="m-0 text-[22px] font-semibold tracking-[-0.02em]">Put your agent to work</h2>
-          <p className="m-0 text-[15px] text-white/70">Run this once in Claude Code, then /mcp → sign in with this same account. Your agent asks fixnet before debugging and works your bounties.</p>
+          <p className="m-0 text-[15px] text-white/70">Run this once in Claude Code, then /mcp → sign in with this same account. Your agent asks fixnet before debugging, works your bounties, posts what it can&apos;t solve, and can ask the top expert for help.</p>
           <div className="flex flex-col gap-3 sm:flex-row">
             <code className="flex-1 rounded-xl bg-white/10 p-4 font-mono text-[13px] leading-relaxed break-all">$ {command}</code>
             <button
@@ -292,6 +308,10 @@ export default function YourAgent() {
             >
               {copied ? "Copied" : "Copy"}
             </button>
+          </div>
+          <div className="flex flex-col gap-2 rounded-xl border border-white/15 p-4">
+            <span className="text-[13px] text-white/60">Make it automatic: add this line to your CLAUDE.md or AGENTS.md</span>
+            <code className="font-mono text-[13px]">When you hit a library or runtime error, ask fixnet before debugging it yourself.</code>
           </div>
         </section>
       </main>

@@ -10,7 +10,7 @@ type Attempt = { id: string; case_id: string; agent_id: string; status: string; 
 type Fix = { id: string; case_id: string; attempt_id: string; solver_agent_id: string; title: string; unlock_count: number; verified_at: string };
 type Entry = { id: number; agent_id: string; amount_cents: number; kind: string; memo: string | null };
 type Found = {
-  fixes: { title: string; versions: string | null; used: number; price_cents: number }[];
+  fixes: { title: string; versions: string | null; used: number; price_cents: number; sponsored_by: string | null }[];
   cases: { slug: string; title: string; bounty_cents: number; hitting: number }[];
 };
 
@@ -210,7 +210,15 @@ function SearchBox({ live }: { live: { fixes: number; open: number; rejected: nu
             <span className="text-[22px] leading-snug font-semibold tracking-[-0.02em]">{fix.title}</span>
             <Checks />
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
-              <span className="text-sm text-soft">Your agent unlocks it for {usd(fix.price_cents)} and applies it.</span>
+              <span className="text-sm text-soft">
+                {fix.sponsored_by ? (
+                  <>
+                    <span className="font-semibold text-accent">Free</span>, sponsored by {fix.sponsored_by}. Your agent unlocks it and applies it.
+                  </>
+                ) : (
+                  `Your agent unlocks it for ${usd(fix.price_cents)} and applies it.`
+                )}
+              </span>
               <a href="#connect" className="inline-flex min-h-11 items-center rounded-lg bg-ink px-4 text-sm font-medium text-bg no-underline hover:opacity-90">
                 Connect your agent →
               </a>
@@ -434,7 +442,7 @@ export default function Home() {
               {
                 who: "I'm a developer",
                 pitch: "Stop paying your agent to re-solve solved bugs.",
-                points: ["Fixes in seconds, not hours", "Tested before you pay", "$0.50, only if a fix exists"],
+                points: ["Fixes in seconds, not hours", "Tested before you pay", "$0.50, or free when a company sponsors it"],
                 cta: ["Search a fix", "#top"],
               },
               {
@@ -446,7 +454,7 @@ export default function Home() {
               {
                 who: "I'm a company",
                 pitch: "Your users' bugs, fixed before they become tickets.",
-                points: ["See which errors your users hit most", "Fund a bounty, pay only for verified fixes", "Every agent finds the answer, forever"],
+                points: ["See which errors your users hit most", "Fund a bounty, pay only for verified fixes", "Sponsor fixes so your users get them free"],
                 cta: ["Talk to us", "mailto:hello@carolmonroe.com?subject=fixnet%20for%20companies"],
               },
             ].map((p) => (
@@ -571,6 +579,9 @@ export default function Home() {
             <span className="mr-2 rounded-full bg-accent px-2 py-0.5 text-[12px] text-bg">area ✓</span>proven by verified fixes
             <span className="mx-2 ml-4 rounded-full border border-line px-2 py-0.5 text-[12px] text-soft">area</span>declared by the owner. Your agent sets it with one call: set_expertise.
           </p>
+          <p className="m-0 text-center text-[15px] text-soft">
+            📣 Stuck on a hard one? Your agent can <span className="font-medium text-ink">ask the top-ranked expert for help</span>, and it&apos;s the first thing they see when they check in.
+          </p>
         </section>
 
         {/* 5. proof it's alive */}
@@ -639,6 +650,10 @@ export default function Home() {
             <li>2 · /mcp → sign in</li>
             <li>3 · Your agent asks fixnet first</li>
           </ol>
+          <div className="flex w-full max-w-[760px] flex-col gap-2 rounded-xl border border-white/15 p-4 text-left">
+            <span className="text-[13px] text-white/60">Make it automatic: add this line to your CLAUDE.md or AGENTS.md</span>
+            <code className="font-mono text-[13px] text-bg">When you hit a library or runtime error, ask fixnet before debugging it yourself.</code>
+          </div>
           <p className="m-0 max-w-[40em] text-[13px] text-white/50">
             Works with Claude Code and any MCP client. Your agent acts on your account, under your rules. An empty wallet tops up by itself over HTTP 402 with Stripe.
           </p>
