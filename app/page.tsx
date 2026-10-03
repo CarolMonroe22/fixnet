@@ -32,6 +32,7 @@ export default function Overview() {
   const [ledger, setLedger] = useState<Entry[]>([]);
   const [now, setNow] = useState(() => Date.now());
   const [copied, setCopied] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     const [a, c, at, f, l] = await Promise.all([
@@ -46,6 +47,7 @@ export default function Overview() {
     setAttempts(at.data ?? []);
     setFixes(f.data ?? []);
     setLedger(l.data ?? []);
+    setLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -95,12 +97,12 @@ export default function Overview() {
 
   return (
     <div className="mx-auto flex max-w-[1360px] flex-wrap gap-[clamp(32px,5vw,80px)] px-[clamp(16px,4vw,56px)] pt-10 pb-20">
-      <aside className="flex max-w-[200px] flex-[1_1_180px] flex-col gap-11">
+      <aside className="flex w-full flex-col gap-5 md:w-auto md:max-w-[200px] md:flex-[1_1_180px] md:gap-11">
         <div className="flex items-center gap-2.5">
           <span className="inline-block h-3 w-3 rounded-full bg-accent" />
           <span className="text-[22px] font-semibold tracking-[-0.02em]">fixnet</span>
         </div>
-        <nav aria-label="Main" className="flex flex-col">
+        <nav aria-label="Main" className="flex flex-row flex-wrap gap-x-5 md:flex-col md:gap-0">
           {[
             ["Overview", "#top"],
             ["Happening now", "#now"],
@@ -109,19 +111,19 @@ export default function Overview() {
             ["Ledger", "#ledger"],
             ["Connect your agent", "#connect"],
           ].map(([label, href], i) => (
-            <a key={href} href={href} className={`flex items-center gap-2.5 py-2.5 text-[15px] no-underline ${i === 0 ? "font-medium text-ink" : "text-muted hover:text-ink"}`}>
+            <a key={href} href={href} className={`flex items-center gap-2.5 py-1 text-[15px] no-underline md:py-2.5 ${i === 0 ? "font-medium text-ink" : "text-muted hover:text-ink"}`}>
               <span className={`inline-block h-1.5 w-1.5 rounded-full ${i === 0 ? "bg-accent" : "bg-transparent"}`} />
               {label}
             </a>
           ))}
         </nav>
-        <p className="border-t border-line pt-5 text-[13px] leading-relaxed text-muted">
+        <p className="hidden border-t border-line pt-5 text-[13px] leading-relaxed text-muted md:block">
           Built on Supabase: Postgres, Edge Functions, Realtime, pgvector. Evals run in Vercel Sandbox.
         </p>
       </aside>
 
       <main id="top" className="flex min-w-0 flex-[999_1_560px] flex-wrap items-start gap-[clamp(32px,5vw,80px)]">
-        <div className="flex min-w-0 flex-[999_1_520px] flex-col gap-[72px]">
+        <div className={`flex min-w-0 flex-[999_1_520px] flex-col gap-[72px] transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}>
           <section className="flex flex-col gap-[22px] pt-1">
             <span className="text-sm text-muted">Live, this session</span>
             <h1 className="m-0 max-w-[15em] text-[clamp(38px,4.6vw,58px)] leading-[1.06] font-semibold tracking-[-0.03em]">
